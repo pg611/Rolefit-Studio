@@ -1,6 +1,11 @@
 flask==3.0.3
 python-docx==1.1.2
-pymupdf==1.24.10
-sentence-transformers==3.0.1
-torch             # let pip choose the CPU wheel automatically
+pypdf==4.3.1
+PyMuPDF==1.24.9
+# Lighter, stable NLP stack for 512 MiB
+sentence-transformers==2.2.2
+transformers==4.30.2
+torch==2.0.1
+tokenizers==0.13.3
+scikit-learn==1.3.2
 gunicorn==22.0.0
