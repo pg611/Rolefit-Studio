@@ -2,13 +2,12 @@ flask==3.0.3
 python-docx==1.1.2
 pypdf==4.3.1
 PyMuPDF==1.24.9
+gunicorn==22.0.0
 
-# light, Render-friendly NLP stack
+# --- NLP stack (compatible + light enough for Render free) ---
 sentence-transformers==2.2.2
 transformers==4.30.2
-huggingface-hub==0.13.4
+huggingface-hub==0.14.1
 tokenizers==0.13.3
 torch==2.0.1
 numpy==1.26.4
-
-gunicorn==22.0.0
