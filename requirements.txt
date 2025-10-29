@@ -2,7 +2,6 @@ flask==3.0.3
 python-docx==1.1.2
 pypdf==4.3.1
 PyMuPDF==1.24.9
-# Lighter, stable NLP stack for 512 MiB
 sentence-transformers==2.2.2
 transformers==4.30.2
 torch==2.0.1
