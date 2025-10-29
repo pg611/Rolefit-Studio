@@ -1,53 +1,62 @@
 from flask import Flask, render_template, request
 from docx import Document
-from pypdf import PdfReader  # fast, pure-Python fallback
-import io
-import re
-import math
+import io, re, math, threading
 from collections import Counter, defaultdict
 from typing import List, Dict
-from sentence_transformers import SentenceTransformer, util
 
+# ---------------- Flask ----------------
 app = Flask(__name__)
 
-# --------- Lazy model loader (prevents OOM on small dynos) ----------
+# ---------- lazy model load + warmup (prevents 502 on Render free) ----------
 _model = None
+_model_ready = False
+
 def get_model():
+    """Load the sentence-transformers model the first time we need it."""
     global _model
     if _model is None:
-        _model = SentenceTransformer('all-MiniLM-L6-v2')  # loads on first use
+        # Import here so module import stays light
+        from sentence_transformers import SentenceTransformer
+        # Small, fast model; CPU only
+        _model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cpu')
     return _model
 
-# Allowed file extensions
+def _warmup():
+    """Background warmup so the first user POST doesn't time out."""
+    global _model_ready
+    try:
+        m = get_model()
+        _ = m.encode(["warmup"], show_progress_bar=False)
+        _model_ready = True
+    except Exception as e:
+        print("Warmup failed:", e)
+
+# Fire once at boot; does NOT block startup
+threading.Thread(target=_warmup, daemon=True).start()
+
+# ---------------- Allowed file types ----------------
 ALLOWED_EXTENSIONS = {'pdf', 'docx'}
 
-# -------------------- Helpers: file handling --------------------
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# ---------------- File readers ----------------
 def extract_text_from_pdf(pdf_file: io.BytesIO) -> str:
     """
     Extract text from a PDF file passed as BytesIO (no disk writes).
-    Try pypdf first (lightweight), then fallback to PyMuPDF (better layout).
     """
-    # 1) pypdf (lightweight)
+    import fitz  # PyMuPDF (import here to keep startup light)
+    text = ""
     try:
-        pdf_file.seek(0)
-        reader = PdfReader(pdf_file)
-        txt = "".join(page.extract_text() or "" for page in reader.pages)
-        if txt.strip():
-            return txt
-    except Exception:
-        pass
-
-    # 2) fallback to PyMuPDF (lazy import keeps memory lower at boot)
-    try:
-        import fitz  # PyMuPDF
         pdf_file.seek(0)
         with fitz.open(stream=pdf_file.getvalue(), filetype="pdf") as doc:
-            return "".join(page.get_text() for page in doc)
+            for page in doc:
+                text += page.get_text()
     except Exception as e:
-        return f"Error extracting text from PDF: {e}"
+        print(f"Error reading PDF: {e}")
+        text = f"Error extracting text from PDF: {e}"
+    return text
+
 
 def extract_text_from_docx(docx_file: io.BytesIO) -> str:
     """
@@ -60,10 +69,11 @@ def extract_text_from_docx(docx_file: io.BytesIO) -> str:
         for paragraph in document.paragraphs:
             text += paragraph.text + "\n"
     except Exception as e:
+        print(f"Error reading DOCX: {e}")
         text = f"Error extracting text from DOCX: {e}"
     return text
 
-# -------------------- Full-JD vs Full-Resume matcher --------------------
+# ---------------- Resume ↔ JD similarity ----------------
 def _chunks(text: str, max_chars: int = 700) -> List[str]:
     """
     Lightweight sentence/paragraph packer to keep chunks ~max_chars for embedding.
@@ -86,22 +96,19 @@ def _chunks(text: str, max_chars: int = 700) -> List[str]:
 def analysis_resume(resume_text: str, job_description: str) -> Dict:
     """
     Compare the entire resume to the entire JD using semantic similarity.
-    Returns an overall 0–100 score and top matching resume snippets.
+    Returns an overall percent score and top matching resume snippets.
     """
+    from sentence_transformers import util  # light import
+    m = get_model()
+
     resume_text = (resume_text or "").strip()
-    job_description = (job_description or "").strip()
-    if not resume_text or not job_description:
-        return {
-            "overall_score": 0.0,
-            "top_matches": [],
-            "raw": {"max_sim": 0.0, "avg_sim": 0.0}
-        }
+    jd_text = (job_description or "").strip()
+    if not resume_text or not jd_text:
+        return {"overall_pct": 0.0, "top_matches": [], "raw": {"max_sim": 0.0, "avg_sim": 0.0}}
 
     resume_chunks = _chunks(resume_text, max_chars=700)
-    model = get_model()  # <— lazy-load right here
-
-    jd_emb = model.encode(job_description, convert_to_tensor=True)
-    chunk_embs = model.encode(resume_chunks, convert_to_tensor=True)
+    jd_emb = m.encode(jd_text, convert_to_tensor=True, show_progress_bar=False)
+    chunk_embs = m.encode(resume_chunks, convert_to_tensor=True, show_progress_bar=False)
 
     sims = util.cos_sim(chunk_embs, jd_emb).squeeze(1)  # [num_chunks]
     max_sim = float(sims.max().item())
@@ -110,47 +117,43 @@ def analysis_resume(resume_text: str, job_description: str) -> Dict:
     # Top-k evidence
     k = min(5, len(resume_chunks))
     top_idx = sims.topk(k).indices.tolist()
-    top_matches = [
-        {"score": float(sims[i].item()), "text": resume_chunks[i][:600]}
-        for i in top_idx
-    ]
+    top_matches = [{"pct": round(100 * float(sims[i].item()), 1), "text": resume_chunks[i][:800]} for i in top_idx]
 
-    # Simple 0–100 scaling
-    def _to_pct(x: float) -> float:
-        lo, hi = 0.2, 0.8  # clamp typical cosine range to stabilize
+    # Scale to a friendlier 0–100; clamp typical range
+    def _scale(x: float) -> float:
+        lo, hi = 0.2, 0.8
         x = max(min(x, hi), lo)
         return round((x - lo) / (hi - lo) * 100.0, 1)
 
-    return {
-        "overall_score": _to_pct(0.6 * max_sim + 0.4 * avg_sim),
-        "top_matches": top_matches,
-        "raw": {"max_sim": round(max_sim, 4), "avg_sim": round(avg_sim, 4)}
-    }
+    overall_pct = _scale(0.6 * max_sim + 0.4 * avg_sim)
+    return {"overall_pct": overall_pct, "top_matches": top_matches, "raw": {"max_sim": max_sim, "avg_sim": avg_sim}}
 
-# -------------------- Stateless JD keyword mining --------------------
+# ---------------- JD term mining (stateless; no stored lists) ----------------
 def _split_sentences(text: str) -> List[str]:
     text = (text or "").strip()
     parts = re.split(r'(?<=[.!?])\s+|\n{2,}', text)
     return [p.strip() for p in parts if p and p.strip()]
 
 def _tokenize(text: str) -> List[str]:
-    # keep letters/digits/+/#/.- ; lowercase; strip trailing punctuation
+    # keep letters/digits/+/#/.- ; lowercase; strip edge punctuation
     raw = re.findall(r"[A-Za-z0-9\+\#\.\-]+", text or "")
     toks = []
     for t in raw:
         t = t.strip().lower().rstrip(".:,;")
         if not t:
             continue
-        if len(t) >= 2 or any(c.isdigit() for c in t):  # keep s3, .net, ec2
+        # keep tokens len>=2 OR containing a digit (keeps s3, .net, ec2)
+        if len(t) >= 2 or any(c.isdigit() for c in t):
             toks.append(t)
     return toks
 
 def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
     """
-    Purely statistical keyphrase mining from the JD.
-    - n-grams (1..4) within sentences
-    - TF * log(S / DF) over sentences
-    - filters short/filler unigrams and cleans n-gram edges
+    Stateless keyphrase mining from the JD:
+      - n-grams (1..4) within sentences
+      - TF * log(S / DF) over sentences
+      - drop ubiquitous short unigrams (so words like 'provide', 'including' disappear)
+      - trim connector words at edges
     """
     sents = _split_sentences(jd_text)
     if not sents:
@@ -169,17 +172,14 @@ def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
                 continue
             for i in range(len(toks) - n + 1):
                 ng = " ".join(toks[i:i+n])
-
-                # drop ultra-short unigrams early (common fillers)
+                # drop tiny unigrams right away
                 if n == 1 and len(ng) <= 3 and ng.isalpha():
                     continue
-
                 tf[ng] += 1
                 seen_ngrams.add(ng)
         for ng in seen_ngrams:
             df[ng] += 1
 
-    # score
     scored = []
     for ng, t in tf.items():
         d = df.get(ng, 1)
@@ -188,7 +188,7 @@ def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
         if score <= 0:
             continue
 
-        # drop ubiquitous short unigrams (dynamic)
+        # drop ubiquitous short unigrams dynamically (e.g., provide, including)
         if " " not in ng:
             df_ratio = d / S
             if ng.isalpha() and len(ng) <= 7 and df_ratio >= 0.35:
@@ -196,7 +196,7 @@ def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
 
         scored.append((ng, score))
 
-    # clean n-gram edges of tiny connectors
+    # trim edges of connector words
     CONNECTORS = {"and", "or", "to", "of", "in", "on", "for", "by", "as", "with"}
     cleaned = []
     for ng, score in scored:
@@ -211,7 +211,6 @@ def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
             ng = " ".join(words)
         cleaned.append((ng, score))
 
-    # rank and dedupe
     cleaned.sort(key=lambda x: (x[1], len(x[0])), reverse=True)
     out, seen = [], set()
     for ng, _ in cleaned:
@@ -224,13 +223,10 @@ def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
 
 def jd_coverage_percent(resume_text: str, jd_text: str, max_terms: int = 60) -> Dict:
     """
-    JD-first coverage:
-      - Extract top JD terms (n-grams)
-      - Check exact (case-insensitive) presence in the resume
-      - Return: % coverage, matched list, missing list, totals
+    JD-first coverage (exact contains, case-insensitive).
+    Returns: coverage %, matched list, missing list.
     """
     resume_text = (resume_text or "").lower()
-    jd_text = (jd_text or "")
     terms = _candidate_terms_from_jd(jd_text, max_terms=max_terms)
 
     matched, missing = [], []
@@ -242,7 +238,6 @@ def jd_coverage_percent(resume_text: str, jd_text: str, max_terms: int = 60) -> 
 
     total = len(terms) or 1
     coverage = round(100.0 * len(matched) / total, 1)
-
     return {
         "coverage_pct": coverage,
         "matched": matched,
@@ -252,31 +247,37 @@ def jd_coverage_percent(resume_text: str, jd_text: str, max_terms: int = 60) -> 
         "max_terms": max_terms
     }
 
-# -------------------- Route --------------------
+# ---------------- Routes ----------------
 @app.route('/', methods=['GET', 'POST'])
 def upload_and_process():
+    warming_note = None
     extracted_text = None
     analysis_results = None
     coverage_results = None
 
     if request.method == 'POST':
-        resume_file = request.files.get('resume')
-        job_description = request.form.get('job_description', '')
+        # If model still warming, return fast to avoid proxy timeout/502
+        if not _model_ready:
+            warming_note = "Warming the NLP model… please submit again in ~10–20 seconds."
+        else:
+            resume_file = request.files.get('resume')
+            job_description = request.form.get('job_description', '')
 
-        if resume_file and allowed_file(resume_file.filename):
-            ext = resume_file.filename.rsplit('.', 1)[1].lower()
-            file_stream = io.BytesIO(resume_file.read())
-            if ext == 'pdf':
-                extracted_text = extract_text_from_pdf(file_stream)
-            elif ext == 'docx':
-                extracted_text = extract_text_from_docx(file_stream)
+            if resume_file and allowed_file(resume_file.filename):
+                ext = resume_file.filename.rsplit('.', 1)[1].lower()
+                file_stream = io.BytesIO(resume_file.read())
+                if ext == 'pdf':
+                    extracted_text = extract_text_from_pdf(file_stream)
+                elif ext == 'docx':
+                    extracted_text = extract_text_from_docx(file_stream)
 
-            if extracted_text and job_description:
-                analysis_results = analysis_resume(extracted_text, job_description)
-                coverage_results = jd_coverage_percent(extracted_text, job_description)
+                if extracted_text and job_description:
+                    analysis_results = analysis_resume(extracted_text, job_description)
+                    coverage_results = jd_coverage_percent(extracted_text, job_description)
 
     return render_template(
         'index.html',
+        warming_note=warming_note,
         extracted_text=extracted_text,
         analysis_results=analysis_results,
         coverage_results=coverage_results
