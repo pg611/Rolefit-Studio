@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request
 from docx import Document
+from pypdf import PdfReader  # fast, pure-Python fallback
 import io
-import fitz  # PyMuPDF
 import re
 import math
 from collections import Counter, defaultdict
@@ -10,34 +10,44 @@ from sentence_transformers import SentenceTransformer, util
 
 app = Flask(__name__)
 
-# Load the Sentence-Transformers model once at startup
-# Tip: use Python 3.10–3.12 for best compatibility
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# --------- Lazy model loader (prevents OOM on small dynos) ----------
+_model = None
+def get_model():
+    global _model
+    if _model is None:
+        _model = SentenceTransformer('all-MiniLM-L6-v2')  # loads on first use
+    return _model
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'pdf', 'docx'}
-
 
 # -------------------- Helpers: file handling --------------------
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-
 def extract_text_from_pdf(pdf_file: io.BytesIO) -> str:
     """
     Extract text from a PDF file passed as BytesIO (no disk writes).
+    Try pypdf first (lightweight), then fallback to PyMuPDF (better layout).
     """
-    text = ""
+    # 1) pypdf (lightweight)
     try:
         pdf_file.seek(0)
-        with fitz.open(stream=pdf_file.getvalue(), filetype="pdf") as doc:
-            for page in doc:
-                text += page.get_text()
-    except Exception as e:
-        print(f"Error reading PDF: {e}")
-        text = f"Error extracting text from PDF: {e}"
-    return text
+        reader = PdfReader(pdf_file)
+        txt = "".join(page.extract_text() or "" for page in reader.pages)
+        if txt.strip():
+            return txt
+    except Exception:
+        pass
 
+    # 2) fallback to PyMuPDF (lazy import keeps memory lower at boot)
+    try:
+        import fitz  # PyMuPDF
+        pdf_file.seek(0)
+        with fitz.open(stream=pdf_file.getvalue(), filetype="pdf") as doc:
+            return "".join(page.get_text() for page in doc)
+    except Exception as e:
+        return f"Error extracting text from PDF: {e}"
 
 def extract_text_from_docx(docx_file: io.BytesIO) -> str:
     """
@@ -50,10 +60,8 @@ def extract_text_from_docx(docx_file: io.BytesIO) -> str:
         for paragraph in document.paragraphs:
             text += paragraph.text + "\n"
     except Exception as e:
-        print(f"Error reading DOCX: {e}")
         text = f"Error extracting text from DOCX: {e}"
     return text
-
 
 # -------------------- Full-JD vs Full-Resume matcher --------------------
 def _chunks(text: str, max_chars: int = 700) -> List[str]:
@@ -75,7 +83,6 @@ def _chunks(text: str, max_chars: int = 700) -> List[str]:
         chunks.append(" ".join(buf))
     return chunks or [text[:max_chars]]
 
-
 def analysis_resume(resume_text: str, job_description: str) -> Dict:
     """
     Compare the entire resume to the entire JD using semantic similarity.
@@ -91,6 +98,8 @@ def analysis_resume(resume_text: str, job_description: str) -> Dict:
         }
 
     resume_chunks = _chunks(resume_text, max_chars=700)
+    model = get_model()  # <— lazy-load right here
+
     jd_emb = model.encode(job_description, convert_to_tensor=True)
     chunk_embs = model.encode(resume_chunks, convert_to_tensor=True)
 
@@ -118,8 +127,7 @@ def analysis_resume(resume_text: str, job_description: str) -> Dict:
         "raw": {"max_sim": round(max_sim, 4), "avg_sim": round(avg_sim, 4)}
     }
 
-
-# -------------------- Stateless JD keyword mining (no seeds, no stopwords) --------------------
+# -------------------- Stateless JD keyword mining --------------------
 def _split_sentences(text: str) -> List[str]:
     text = (text or "").strip()
     parts = re.split(r'(?<=[.!?])\s+|\n{2,}', text)
@@ -133,15 +141,13 @@ def _tokenize(text: str) -> List[str]:
         t = t.strip().lower().rstrip(".:,;")
         if not t:
             continue
-        # keep tokens len>=2 OR containing a digit (keeps s3, .net, ec2)
-        if len(t) >= 2 or any(c.isdigit() for c in t):
+        if len(t) >= 2 or any(c.isdigit() for c in t):  # keep s3, .net, ec2
             toks.append(t)
     return toks
 
-
 def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
     """
-    Stateless, purely statistical keyphrase mining from the JD.
+    Purely statistical keyphrase mining from the JD.
     - n-grams (1..4) within sentences
     - TF * log(S / DF) over sentences
     - filters short/filler unigrams and cleans n-gram edges
@@ -182,11 +188,10 @@ def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
         if score <= 0:
             continue
 
-        # drop ubiquitous short unigrams (dynamic, no hardcoded list)
+        # drop ubiquitous short unigrams (dynamic)
         if " " not in ng:
             df_ratio = d / S
             if ng.isalpha() and len(ng) <= 7 and df_ratio >= 0.35:
-                # e.g., provide, including, create, support, system (if very common)
                 continue
 
         scored.append((ng, score))
@@ -217,15 +222,12 @@ def _candidate_terms_from_jd(jd_text: str, max_terms: int = 60) -> List[str]:
             break
     return out
 
-
-# ---------- ADD this new function (JD coverage %, no similarity used) ----------
 def jd_coverage_percent(resume_text: str, jd_text: str, max_terms: int = 60) -> Dict:
     """
     JD-first coverage:
       - Extract top JD terms (n-grams)
       - Check exact (case-insensitive) presence in the resume
       - Return: % coverage, matched list, missing list, totals
-    No embeddings, no similarity, no storage.
     """
     resume_text = (resume_text or "").lower()
     jd_text = (jd_text or "")
@@ -249,9 +251,6 @@ def jd_coverage_percent(resume_text: str, jd_text: str, max_terms: int = 60) -> 
         "matched_count": len(matched),
         "max_terms": max_terms
     }
-
- 
-
 
 # -------------------- Route --------------------
 @app.route('/', methods=['GET', 'POST'])
@@ -282,8 +281,6 @@ def upload_and_process():
         analysis_results=analysis_results,
         coverage_results=coverage_results
     )
-    
-
 
 if __name__ == '__main__':
     app.run(debug=True)
