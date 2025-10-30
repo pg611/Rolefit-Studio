@@ -1,143 +1,222 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta charset="UTF-8" />
   <title>RoleFit Studio — Resume ↔ JD Analyzer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --bg:#0f172a; --card:#111827; --accent:#7c3aed; --soft:#1f2937; --text:#e5e7eb; }
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,Segoe UI,Roboto,Arial}
-    .wrap{max-width:1000px;margin:32px auto;padding:0 16px}
-    .title{font-weight:800;font-size:28px;margin:4px 0 16px}
-    .sub{opacity:.8;margin-bottom:18px}
-    .card{background:linear-gradient(180deg,#0b1220, #0b1220) padding-box,
-           linear-gradient(135deg, #1f2937, #111827) border-box;border:1px solid transparent;
-           border-radius:16px; box-shadow:0 10px 40px rgba(0,0,0,.4); padding:18px}
-    .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    form .row{grid-template-columns:1fr}
-    input[type=file], textarea, button{
-      width:100%;border:1px solid #273248;background:var(--soft);color:var(--text);
-      border-radius:12px;padding:12px 14px;font-size:14px
+    :root{
+      --bg: #0b1220;
+      --fg: #e7eaef;
+      --muted:#a7b0c0;
+      --card:#121a2b;
+      --accent:#6ea8fe;
+      --accent-2:#9b8cff;
+      --border:#263149;
+      --chip:#1b2540;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+      --radius: 14px;
     }
-    textarea{min-height:160px;resize:vertical}
-    button{background:linear-gradient(90deg,#7c3aed,#4f46e5);border:none;font-weight:700;cursor:pointer}
-    button:hover{filter:brightness(1.05)}
-    .badge{display:inline-block;padding:6px 10px;border-radius:999px;background:#111827;border:1px solid #273248;font-size:13px}
-    .ok{color:#10b981}.warn{color:#f59e0b}.err{color:#ef4444}
+    *{ box-sizing: border-box; }
+    body{
+      margin:0; background: radial-gradient(1200px 700px at 15% -5%, #18223a 0, #0c1322 60%, #0b1120 100%), var(--bg);
+      color:var(--fg); font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      line-height:1.5; padding-bottom:60px;
+    }
+    header{
+      padding:32px 20px 18px;
+      background: linear-gradient(120deg, rgba(110,168,254,.2), rgba(155,140,255,.18) 40%, rgba(110,168,254,.15) 90%);
+      border-bottom:1px solid var(--border);
+    }
+    .wrap{ max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+    h1{ margin:0 0 6px; font-weight:750; letter-spacing:.2px; }
+    .tagline{ color:var(--muted); margin-top:4px; }
 
-    /* tabs */
-    .tabs{margin-top:16px}
-    .tab-buttons{display:flex;gap:8px;flex-wrap:wrap}
-    .tab-buttons button{background:#0b1020;border:1px solid #273248}
-    .tab-buttons button.active{background:var(--accent)}
-    .tab{display:none;margin-top:12px}
-    .tab.active{display:block}
+    .card{
+      background: var(--card);
+      border:1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding:18px;
+      margin:18px 0;
+    }
+    label{ font-weight:600; display:block; margin-bottom:8px; }
+    input[type="file"], textarea{
+      width:100%; border:1px solid var(--border); background:#0e1730; color:var(--fg);
+      border-radius:12px; padding:12px; outline:none;
+    }
+    textarea{ min-height:180px; resize:vertical; }
+    .btn{
+      padding:12px 18px; border:none; border-radius:12px; cursor:pointer; color:#0a0f1f; font-weight:700;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      transition: transform .05s ease;
+    }
+    .btn:hover{ transform: translateY(-1px); }
 
-    .list{margin:0;padding-left:20px}
-    .note{margin:10px 0;padding:10px 12px;border-radius:10px;background:#1f2937;border:1px dashed #334155}
-    pre{white-space:pre-wrap;word-break:break-word;background:#0a0f1e;border:1px solid #273248;padding:12px;border-radius:12px}
-    .header{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+    .score-banner{
+      display:flex; align-items:center; gap:16px; margin-top:4px;
+    }
+    .score-circle{
+      width:92px; height:92px; border-radius:50%;
+      background: conic-gradient(var(--accent), var(--accent-2));
+      display:grid; place-items:center; color:#0b1120; font-size:20px; font-weight:900;
+      box-shadow: 0 6px 22px rgba(110,168,254,.28);
+    }
+    .score-circle > span{
+      background:#fff; color:#0b1120; padding:10px 12px; border-radius:50%;
+      min-width:72px; text-align:center; font-variant-numeric: tabular-nums;
+    }
+    .muted{ color:var(--muted); }
+
+    /* Tabs */
+    .tabs{ margin-top:10px; }
+    .tabbar{
+      display:flex; gap:8px; border-bottom:1px solid var(--border);
+      padding:0 6px; overflow:auto; scrollbar-width:none;
+    }
+    .tabbar::-webkit-scrollbar{ display:none; }
+    .tabbtn{
+      appearance:none; background:none; border:none; color:var(--muted); padding:12px 10px; font-weight:700; cursor:pointer;
+      border-bottom:2px solid transparent; transition:color .15s ease, border-color .15s ease;
+    }
+    .tabbtn.active{ color:var(--fg); border-color:var(--accent); }
+    .tabpanes{ padding:14px 6px; }
+    .pane{ display:none; }
+    .pane.active{ display:block; }
+
+    /* Evidence list */
+    ol{ margin: 10px 0 0 20px; }
+    .snippet{
+      white-space: pre-wrap; background:var(--chip); border:1px solid var(--border); border-radius:12px; padding:12px; margin-top:8px;
+    }
+    .chip{
+      display:inline-block; padding:4px 10px; border-radius:999px; background:#122046; border:1px solid var(--border);
+      color:#cfe0ff; font-weight:700; font-size:12px; margin-right:8px;
+    }
+    details{
+      background:#0f1831; border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-top:10px;
+    }
+    summary{ cursor:pointer; font-weight:700; }
+    ul{ margin:8px 0 0 18px; }
   </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="header">
-    <div>
-      <div class="title">RoleFit Studio</div>
-      <div class="sub">Upload your resume and paste a job description. Get an overall match %, strong evidence, and exact missing terms to add.</div>
+  <header>
+    <div class="wrap">
+      <h1>RoleFit Studio</h1>
+      <div class="tagline">ATS-friendly analyzer to see how well your resume aligns with a job description.</div>
     </div>
-    {% if analysis_results %}
-      <div class="badge">Overall JD Match: <b>{{ analysis_results.overall_pct }}%</b></div>
-    {% endif %}
-  </div>
+  </header>
 
-  {% if warming_note %}
-    <div class="note warn">{{ warming_note }}</div>
-  {% endif %}
-
-  <div class="card">
-    <form method="post" enctype="multipart/form-data">
-      <div class="row">
+  <main class="wrap">
+    <form class="card" method="POST" enctype="multipart/form-data">
+      <div style="display:grid; gap:16px;">
         <div>
-          <label>Resume (PDF or DOCX)</label>
-          <input type="file" name="resume" required>
+          <label for="resume">Resume (PDF or DOCX)</label>
+          <input type="file" id="resume" name="resume" accept=".pdf,.docx" required />
         </div>
         <div>
-          <label>Job Description</label>
-          <textarea name="job_description" placeholder="Paste the full JD here…" required></textarea>
+          <label for="job_description">Job Description (paste full text)</label>
+          <textarea id="job_description" name="job_description" placeholder="Paste the full JD here..." required></textarea>
         </div>
-      </div>
-      <div style="margin-top:12px">
-        <button type="submit">Analyze</button>
+        <div>
+          <button class="btn" type="submit">Analyze Fit</button>
+        </div>
       </div>
     </form>
-  </div>
 
-  {% if analysis_results %}
-    <div class="card" style="margin-top:16px">
-      <div class="tabs">
-        <div class="tab-buttons">
-          <button class="active" data-tab="evidence">Strongest Evidence</button>
-          <button data-tab="missing">Missing JD Terms</button>
-          <button data-tab="matched">Matched JD Terms</button>
-          <button data-tab="resume">Extracted Resume</button>
+    {% if analysis_results %}
+      <section class="card">
+        <h2 style="margin-top:0;">Overall Role Fit</h2>
+        <div class="score-banner">
+          <div class="score-circle"><span>{{ analysis_results.overall_score|round(1) }}%</span></div>
+          <div class="muted">
+            Your resume’s overall semantic alignment to this JD (higher is better).<br>
+            Tip: strengthen domain terms and tools mentioned in the JD to raise this score.
+          </div>
         </div>
 
-        <div id="evidence" class="tab active">
-          <h3>Top Matching Evidence from Your Resume</h3>
-          <ol class="list">
-            {% for m in analysis_results.top_matches %}
-              <li><b>{{ m.pct }}%</b> — {{ m.text }}</li>
-            {% endfor %}
-          </ol>
-        </div>
+        <div class="tabs">
+          <div class="tabbar">
+            <button class="tabbtn active" data-tab="t1">Highlights (Best-Matching Sections)</button>
+            <button class="tabbtn" data-tab="t2">Missing Terms</button>
+            <button class="tabbtn" data-tab="t3">Matched Terms</button>
+            <button class="tabbtn" data-tab="t4">Extracted Resume</button>
+          </div>
 
-        <div id="missing" class="tab">
-          <h3>JD Keyword Coverage (Exact Match)</h3>
-          <div class="badge">Coverage: <b>{{ coverage_results.coverage_pct }}%</b> ({{ coverage_results.matched_count }}/{{ coverage_results.total_terms }})</div>
-          <div class="note">Add naturally in context; avoid keyword stuffing.</div>
-          {% if coverage_results.missing %}
-            <ul class="list">
-              {% for t in coverage_results.missing %}
-                <li>{{ t }}</li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <div class="ok">Nice! Nothing obvious missing.</div>
-          {% endif %}
-        </div>
+          <div class="tabpanes">
+            <!-- t1: Highlights -->
+            <div id="t1" class="pane active">
+              <p class="muted">Top sections of your resume that best support the JD.</p>
+              <ol>
+                {% for m in analysis_results.top_matches %}
+                  <li>
+                    <span class="chip">{{ (m.score * 100) | round(1) }}% fit</span>
+                    <div class="snippet">{{ m.text }}</div>
+                  </li>
+                {% endfor %}
+              </ol>
+            </div>
 
-        <div id="matched" class="tab">
-          <h3>Matched JD Terms (Exact Presence)</h3>
-          {% if coverage_results.matched %}
-            <ul class="list">
-              {% for t in coverage_results.matched %}
-                <li>{{ t }}</li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <div class="warn">No matches detected — check resume parsing.</div>
-          {% endif %}
-        </div>
+            <!-- t2: Missing Terms -->
+            {% if coverage_results %}
+            <div id="t2" class="pane">
+              <p class="muted">Terms/phrases from the JD not found in your resume (exact text). Add naturally—avoid stuffing.</p>
+              <details open>
+                <summary>Missing Terms</summary>
+                <ul>
+                  {% for t in coverage_results.missing %}
+                    <li>{{ t }}</li>
+                  {% endfor %}
+                </ul>
+              </details>
+            </div>
+            {% endif %}
 
-        <div id="resume" class="tab">
-          <h3>Your Extracted Resume Text</h3>
-          <pre>{{ extracted_text }}</pre>
-        </div>
-      </div>
-    </div>
-  {% endif %}
-</div>
+            <!-- t3: Matched Terms -->
+            {% if coverage_results %}
+            <div id="t3" class="pane">
+              <p class="muted">Terms/phrases from the JD already present in your resume.</p>
+              <details open>
+                <summary>Matched Terms</summary>
+                <ul>
+                  {% for t in coverage_results.matched %}
+                    <li>{{ t }}</li>
+                  {% endfor %}
+                </ul>
+              </details>
+            </div>
+            {% endif %}
 
-<script>
-  document.querySelectorAll('.tab-buttons button').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      document.querySelectorAll('.tab-buttons button').forEach(b=>b.classList.remove('active'));
-      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById(btn.dataset.tab).classList.add('active');
-    })
-  });
-</script>
+            <!-- t4: Extracted Resume -->
+            {% if extracted_text %}
+            <div id="t4" class="pane">
+              <p class="muted">Raw text we extracted from your uploaded resume (for transparency/troubleshooting).</p>
+              <details open>
+                <summary>Show/Hide Resume Text</summary>
+                <div class="snippet">{{ extracted_text }}</div>
+              </details>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </section>
+    {% endif %}
+  </main>
+
+  <script>
+    // simple tab controller
+    const btns = document.querySelectorAll('.tabbtn');
+    const panes = document.querySelectorAll('.pane');
+    btns.forEach(b=>{
+      b.addEventListener('click', ()=>{
+        btns.forEach(x=>x.classList.remove('active'));
+        panes.forEach(p=>p.classList.remove('active'));
+        b.classList.add('active');
+        const id = b.dataset.tab;
+        document.getElementById(id).classList.add('active');
+      });
+    });
+  </script>
 </body>
 </html>
