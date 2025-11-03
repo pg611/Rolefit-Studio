@@ -1,10 +1,6 @@
 # Rolefit-Studio
 ![Rolefit-Studio](https://github.com/pg611/Rolefit-Studio/blob/main/rolefit-studio-banner.png)
 
-# 🤖 RoleFit-Studio — Resume ↔ JD Analyzer (Flask + Sentence-BERT)
-
-![RoleFit Studio Banner](https://raw.githubusercontent.com/pg611/Rolefit-Studio/main/rolefit-studio-banner.png)
-
 AI-powered web application that analyzes how well your **resume** matches a **job description**, helping you optimize for **ATS (Applicant Tracking Systems)** and **semantic relevance**.
 
 🔗 **Live App:** [https://rolefit-studio.onrender.com](https://rolefit-studio.onrender.com)
